@@ -609,9 +609,10 @@ func (c *ColumnMap) SetMaxSize(size int) *ColumnMap {
 // of that transaction.  Transactions should be terminated with
 // a call to Commit() or Rollback()
 type Transaction struct {
-	dbmap  *DbMap
-	tx     *sql.Tx
-	closed bool
+	dbmap     *DbMap
+	tx        *sql.Tx
+	closed    bool
+	listeners []func() error
 }
 
 // SqlExecutor exposes gorp operations that can be run from Pre/Post
@@ -1089,7 +1090,7 @@ func (m *DbMap) Begin() (*Transaction, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Transaction{m, tx, false}, nil
+	return &Transaction{m, tx, false, nil}, nil
 }
 
 // TableFor returns the *TableMap corresponding to the given Go Type
@@ -1259,10 +1260,26 @@ func (t *Transaction) Commit() error {
 	if !t.closed {
 		t.closed = true
 		t.dbmap.trace("commit;")
-		return t.tx.Commit()
+		err := t.tx.Commit()
+		if err != nil {
+			return err
+		}
+		for _, listener := range t.listeners {
+			err = listener()
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 
 	return sql.ErrTxDone
+}
+
+// AfterCommit adds a commit listener to the transaction. Commit listeners are
+// run in the same order they are added.
+func (t *Transaction) AfterCommit(listener func() error) {
+	t.listeners = append(t.listeners, listener)
 }
 
 // Rollback rolls back the underlying database transaction.
